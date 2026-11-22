@@ -1,0 +1,74 @@
+name: Sync Upstream HarborCommunity
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: Build and publish a Linux AppImage release even if this version already exists
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync beta-branch from HarborCommunity/Harbor
+    runs-on: ubuntu-24.04
+    outputs:
+      needs_release: ${{ steps.check.outputs.needs_release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: beta-branch
+          fetch-depth: 0
+
+      - name: Merge upstream beta-branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/HarborCommunity/Harbor.git || true
+          git fetch upstream beta-branch
+          if git merge-base --is-ancestor upstream/beta-branch HEAD; then
+            echo "Already up to date with upstream/beta-branch."
+          else
+            git merge --no-edit upstream/beta-branch
+            git push origin beta-branch
+          fi
+
+      - name: Check whether a Linux release is needed
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_RELEASE: ${{ inputs.force_release }}
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version")"
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if [ "$FORCE_RELEASE" = "true" ]; then
+            echo "needs_release=true" >> "$GITHUB_OUTPUT"
+          elif gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists."
+            echo "needs_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release ${TAG} does not exist yet — triggering Linux build."
+            echo "needs_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: sync
+    if: ${{ needs.sync.outputs.needs_release == 'true' }}
+    uses: ./.github/workflows/linux-release.yml
+    with:
+      ref: beta-branch
+    secrets: inherit

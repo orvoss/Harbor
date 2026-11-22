@@ -341,9 +341,36 @@ export async function checkForUpdate(manual = false): Promise<void> {
       });
       return;
     }
+    const probe = await probeHandoff();
+    if (!currentRequest(request, selected)) return;
+    if (probe?.platformKey.startsWith("linux-")) {
+      try {
+        candidate = (await check({ timeout: 15_000 })) as UpdateHandle | null;
+      } catch {
+        candidate = null;
+      }
+      if (!currentRequest(request, selected)) return;
+      if (candidate) {
+        const dismissed = readDismissed();
+        const found = candidate;
+        handle = found;
+        candidate = null;
+        releaseDownloadUrl = RELEASES_URL;
+        set({
+          status: "available",
+          version: found.version,
+          channel: selected,
+          notes: found.body ?? null,
+          handoff: null,
+          dismissed,
+          panelOpen: manual || dismissed !== found.version,
+        });
+        return;
+      }
+    }
     const { discoverGithubUpdate } = await import("./github-update");
     const { getVersion } = await import("@tauri-apps/api/app");
-    const release = await discoverGithubUpdate(await getVersion(), await probeHandoff(), selected);
+    const release = await discoverGithubUpdate(await getVersion(), probe, selected);
     if (!currentRequest(request, selected)) return;
     if (!release) {
       set({ status: "uptodate", version: null, notes: null, handoff: null });

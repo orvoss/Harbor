@@ -16,9 +16,9 @@ test("changelog downloads use the in-app installer controls", () => {
 });
 
 test("rollback release actions open the official repository", () => {
-  assert.equal(GITHUB_REPOSITORY_URL, "https://github.com/HarborCommunity/Harbor");
-  assert.equal(GITHUB_RELEASES_API_URL, "https://api.github.com/repos/HarborCommunity/Harbor/releases");
-  assert.equal(RELEASES_URL, "https://github.com/HarborCommunity/Harbor/releases");
+  assert.equal(GITHUB_REPOSITORY_URL, "https://github.com/orvoss/Harbor");
+  assert.equal(GITHUB_RELEASES_API_URL, "https://api.github.com/repos/orvoss/Harbor/releases");
+  assert.equal(RELEASES_URL, "https://github.com/orvoss/Harbor/releases");
 
   for (const path of [
     "rollback-row.tsx",

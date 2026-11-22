@@ -1,0 +1,228 @@
+name: Linux AppImage Release
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to build (defaults to triggering ref)
+        type: string
+        default: ""
+      tag:
+        description: Release tag override (defaults to v<version> from tauri.conf.json)
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag override (defaults to v<version> from tauri.conf.json)
+        type: string
+        default: ""
+  push:
+    tags:
+      - "v*"
+      - "V*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: linux-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: --max-old-space-size=6144
+
+jobs:
+  build-and-publish:
+    name: Linux x86_64 AppImage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install Linux build & AppImage dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            file \
+            gstreamer1.0-libav \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            libasound2-dev \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            libmpv-dev \
+            libpulse-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libudev-dev \
+            libwebkit2gtk-4.1-dev \
+            patchelf \
+            pkg-config \
+            xdg-utils \
+            xz-utils
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            harbor-core
+            src-tauri
+            src-tauri/extensions-module
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Pokémon engine SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.401"
+
+      - name: Build Pokémon engine
+        run: >-
+          node tools/pokemon-engine/build.mjs
+          --fetch-source "${{ runner.temp }}/harbor-pokemon-source"
+          --output src-tauri/resources/pokemon-engine
+          --artifacts "${{ runner.temp }}/harbor-pokemon-build"
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Fetch Linux binaries and fonts
+        run: |
+          pnpm run setup:binaries
+          pnpm run setup:fonts
+
+      - name: Build signed Linux AppImage
+        env:
+          NO_STRIP: "true"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is required for in-app updates."
+            exit 1
+          fi
+          pnpm tauri build \
+            --target x86_64-unknown-linux-gnu \
+            --bundles appimage \
+            --config src-tauri/tauri.updater.conf.json
+
+      - name: Prepare updater manifest (latest.json)
+        id: manifest
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          TAG_INPUT: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage"
+          APPIMAGE="$(find "$BUNDLE_DIR" -maxdepth 1 -type f -name '*.AppImage' | head -n 1)"
+          if [ -z "$APPIMAGE" ]; then
+            echo "::error::No AppImage produced in $BUNDLE_DIR"
+            exit 1
+          fi
+          SIG_FILE="${APPIMAGE}.sig"
+          if [ ! -s "$SIG_FILE" ]; then
+            pnpm tauri signer sign "$APPIMAGE" --password=
+          fi
+          test -s "$SIG_FILE"
+
+          VERSION="$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version")"
+          if [ -n "$TAG_INPUT" ]; then
+            TAG="$TAG_INPUT"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
+          else
+            TAG="v${VERSION}"
+          fi
+
+          APPIMAGE_NAME="$(basename "$APPIMAGE")"
+          STAGE_DIR="${RUNNER_TEMP}/harbor-linux-release"
+          mkdir -p "$STAGE_DIR"
+          cp "$APPIMAGE" "${STAGE_DIR}/${APPIMAGE_NAME}"
+          cp "$SIG_FILE" "${STAGE_DIR}/${APPIMAGE_NAME}.sig"
+
+          VERSION="$VERSION" \
+          TAG="$TAG" \
+          REPO="$REPO" \
+          APPIMAGE_NAME="$APPIMAGE_NAME" \
+          SIG_FILE="$SIG_FILE" \
+          STAGE_DIR="$STAGE_DIR" \
+          node -e '
+            const fs = require("fs");
+            const version = process.env.VERSION;
+            const tag = process.env.TAG;
+            const repo = process.env.REPO;
+            const appimageName = process.env.APPIMAGE_NAME;
+            const sig = fs.readFileSync(process.env.SIG_FILE, "utf8").trim();
+            const manifest = {
+              version,
+              notes: `Harbor ${version} for Linux (x86_64 AppImage)`,
+              pub_date: new Date().toISOString(),
+              platforms: {
+                "linux-x86_64": {
+                  signature: sig,
+                  url: `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(appimageName)}`,
+                },
+              },
+            };
+            fs.writeFileSync(`${process.env.STAGE_DIR}/latest.json`, JSON.stringify(manifest, null, 2) + "\n");
+          '
+
+          cat "${STAGE_DIR}/latest.json"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "stage_dir=${STAGE_DIR}" >> "$GITHUB_OUTPUT"
+          echo "appimage_name=${APPIMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: harbor-linux-x86_64-${{ steps.manifest.outputs.version }}
+          path: ${{ steps.manifest.outputs.stage_dir }}/*
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.manifest.outputs.tag }}
+          VERSION: ${{ steps.manifest.outputs.version }}
+          STAGE_DIR: ${{ steps.manifest.outputs.stage_dir }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${STAGE_DIR}"/* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --latest
+          else
+            gh release create "$TAG" "${STAGE_DIR}"/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Harbor v${VERSION} (Linux)" \
+              --notes "Automated Linux x86_64 AppImage build from HarborCommunity/Harbor with signed in-app auto-updates." \
+              --latest
+          fi

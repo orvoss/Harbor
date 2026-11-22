@@ -90,10 +90,16 @@ export function githubDownloadAsset(raw: GithubRelease, platformKey: string | un
     "windows-i686": /(?:^|[-_])(?:i686|x86)(?=[-.]|$)/i,
     "darwin-aarch64": /(?:^|[-_])(?:aarch64|arm64)(?=[-_.]|$)/i,
     "darwin-x86_64": /(?:^|[-_])(?:x64|x86_64|amd64|intel)(?=[-_.]|$)/i,
+    "linux-x86_64": /(?:^|[-_])(?:x64|x86_64|amd64)(?=[-_.]|$)/i,
+    "linux-aarch64": /(?:^|[-_])(?:aarch64|arm64)(?=[-_.]|$)/i,
   };
   const architecture = platformKey ? architectures[platformKey] : undefined;
   if (!architecture) return null;
-  const extension = platformKey!.startsWith("windows-") ? /\.exe$/i : /\.dmg$/i;
+  const extension = platformKey!.startsWith("windows-")
+    ? /\.exe$/i
+    : platformKey!.startsWith("linux-")
+      ? /\.appimage$/i
+      : /\.dmg$/i;
   const candidates = assets.filter((asset) => extension.test(asset.name!));
   return (
     candidates.find((asset) => architecture.test(asset.name!)) ??

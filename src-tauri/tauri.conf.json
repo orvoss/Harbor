@@ -128,8 +128,8 @@
       }
     },
     "updater": {
-      "endpoints": ["https://harborcommunity.site/updates/latest.json"],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU2N0VDNzA1NUM2OERFRTYKUldUbTNtaGNCY2QrVnNmU1VwU1dXcEN5L0xZY0ZpeFBlSzM4MDBoL1B5QWJydFdQNEE4QzNQWFYK",
+      "endpoints": ["https://github.com/orvoss/Harbor/releases/latest/download/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDA5QjEzRkQ1Rjg5OTNEODAKUldTQVBabjQxVCt4Q1JGRERUNHhsRzZMdlBCekMzd2pZUmh2V05oSlA4VUNRSzRjZnYrQUd1ekMK",
       "windows": {
         "installMode": "passive"
       }
