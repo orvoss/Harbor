@@ -127,6 +127,7 @@ jobs:
             echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is required for in-app updates."
             exit 1
           fi
+          export LD_LIBRARY_PATH="${PWD}/src-tauri/resources/capstan/runtime/lib/server:${PWD}/src-tauri/resources/capstan/runtime/lib:${PWD}/src-tauri/resources/pokemon-engine:${LD_LIBRARY_PATH:-}"
           pnpm tauri build \
             --verbose \
             --target x86_64-unknown-linux-gnu \
