@@ -168,6 +168,17 @@ jobs:
 
           # Binary + Tauri resource_dir layout ($APPDIR/usr/lib/Harbor)
           install -Dm755 "$BIN" "$APPDIR/usr/bin/harbor"
+          # Bundle OpenSSL 4 libs beside $ORIGIN/../lib (without setting LD_LIBRARY_PATH)
+          # so harbor runs on both Omarchy (OpenSSL 3) and Arch rolling (OpenSSL 4)
+          # while host WebKitGTK/mpv/Mesa/bash stay 100% on system /usr/lib.
+          for soname in libssl.so.4 libcrypto.so.4; do
+            if [ -f "/usr/lib/${soname}" ]; then
+              cp -L "/usr/lib/${soname}" "$APPDIR/usr/lib/${soname}"
+            fi
+          done
+          if [ -f "$APPDIR/usr/lib/libssl.so.4" ]; then
+            patchelf --set-rpath '$ORIGIN' "$APPDIR/usr/lib/libssl.so.4"
+          fi
           ln -s Harbor "$APPDIR/usr/lib/harbor"
           cp -a src-tauri/fonts/. "$APPDIR/usr/lib/Harbor/fonts/"
           cp -a src-tauri/THIRD-PARTY-NOTICES.txt "$APPDIR/usr/lib/Harbor/notices/"
