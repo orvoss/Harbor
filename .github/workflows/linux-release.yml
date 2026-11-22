@@ -46,6 +46,8 @@ jobs:
           pacman -Syu --noconfirm --needed \
             alsa-lib \
             base-devel \
+            clang \
+            cmake \
             curl \
             desktop-file-utils \
             file \
@@ -64,6 +66,7 @@ jobs:
             libpulse \
             librsvg \
             mpv \
+            ninja \
             openssl \
             patchelf \
             pkgconf \
