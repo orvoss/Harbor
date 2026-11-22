@@ -34,42 +34,52 @@ env:
 
 jobs:
   build-and-publish:
-    name: Linux x86_64 AppImage
-    runs-on: ubuntu-22.04
+    name: Arch Linux x86_64 Native AppImage
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:latest
     timeout-minutes: 120
 
     steps:
+      - name: Install Arch Linux build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            alsa-lib \
+            base-devel \
+            curl \
+            desktop-file-utils \
+            file \
+            git \
+            github-cli \
+            gst-libav \
+            gst-plugins-bad \
+            gst-plugins-base \
+            gst-plugins-good \
+            gst-plugins-ugly \
+            gstreamer \
+            gtk3 \
+            icu \
+            jdk17-openjdk \
+            libayatana-appindicator \
+            libpulse \
+            librsvg \
+            mpv \
+            openssl \
+            patchelf \
+            pkgconf \
+            squashfs-tools \
+            systemd-libs \
+            unzip \
+            webkit2gtk-4.1 \
+            wget \
+            which \
+            xz
+          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk" >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
-
-      - name: Install Linux build & AppImage dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            file \
-            gstreamer1.0-libav \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-ugly \
-            gstreamer1.0-tools \
-            libasound2-dev \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            libicu70 \
-            libkrb5-3 \
-            libmpv-dev \
-            libpulse-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libudev-dev \
-            libwebkit2gtk-4.1-dev \
-            patchelf \
-            pkg-config \
-            xdg-utils \
-            xz-utils
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -94,12 +104,6 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
       - name: Set up Pokémon engine SDK
         uses: actions/setup-dotnet@v4
         with:
@@ -111,21 +115,6 @@ jobs:
             --fetch-source "${{ runner.temp }}/harbor-pokemon-source" \
             --output src-tauri/resources/pokemon-engine \
             --artifacts "${{ runner.temp }}/harbor-pokemon-build"
-          # Optional LTTng tracing shim links liblttng-ust.so.0 (absent on Ubuntu 22.04+)
-          # and makes linuxdeploy abort; .NET runs cleanly without it.
-          rm -f src-tauri/resources/pokemon-engine/libcoreclrtraceptprovider.so
-          LD_LIBRARY_PATH="${PWD}/src-tauri/resources/pokemon-engine:${LD_LIBRARY_PATH:-}" bash -c '
-            missing=0
-            for f in src-tauri/resources/pokemon-engine/*.so src-tauri/resources/pokemon-engine/Harbor.PokemonEngine; do
-              [ -f "$f" ] || continue
-              if ldd "$f" 2>/dev/null | grep -q "not found"; then
-                echo "::error::Missing shared library for $f:"
-                ldd "$f" | grep "not found"
-                missing=1
-              fi
-            done
-            exit "$missing"
-          '
 
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
@@ -133,67 +122,17 @@ jobs:
       - name: Fetch fonts
         run: pnpm run setup:fonts
 
-      - name: Build signed Linux AppImage
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-          NO_STRIP: "true"
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+      - name: Build native Arch Harbor binary
         run: |
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is required for in-app updates."
-            exit 1
-          fi
-          export LD_LIBRARY_PATH="${PWD}/src-tauri/resources/capstan/runtime/lib/server:${PWD}/src-tauri/resources/capstan/runtime/lib:${PWD}/src-tauri/resources/pokemon-engine:${LD_LIBRARY_PATH:-}"
           pnpm tauri build \
-            --verbose \
+            --no-bundle \
             --target x86_64-unknown-linux-gnu \
-            --bundles appimage \
             --config '{"bundle":{"externalBin":[],"createUpdaterArtifacts":true}}'
 
-      - name: Strip host-ABI libraries and repack signed AppImage
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: |
-          set -euo pipefail
-          BUNDLE_DIR="src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage"
-          APPDIR="${BUNDLE_DIR}/Harbor.AppDir"
-          APPIMAGE="$(find "$BUNDLE_DIR" -maxdepth 1 -type f -name '*.AppImage' | head -n 1)"
-          test -d "$APPDIR"
-          test -f "$APPIMAGE"
-
-          # Exclude Ubuntu 22.04 libraries that clash with newer host Mesa/Wayland,
-          # bash/readline, and VA-API/VDPAU drivers on rolling distros like Arch.
-          for pattern in \
-            'libwayland-client.so*' \
-            'libwayland-egl.so*' \
-            'libwayland-server.so*' \
-            'libwayland-cursor.so*' \
-            'libreadline.so*' \
-            'libtinfo.so*' \
-            'libncurses.so*' \
-            'libncursesw.so*' \
-            'libva.so*' \
-            'libva-drm.so*' \
-            'libva-wayland.so*' \
-            'libva-x11.so*' \
-            'libvdpau.so*'; do
-            find "${APPDIR}/usr/lib" -maxdepth 2 -name "$pattern" -print -delete
-          done
-
-          rm -f "$APPIMAGE" "${APPIMAGE}.sig"
-          ARCH=x86_64 LDAI_OUTPUT="$APPIMAGE" \
-            "${HOME}/.cache/tauri/linuxdeploy-plugin-appimage-x86_64.AppImage" \
-            --appdir "$APPDIR"
-          test -s "$APPIMAGE"
-          pnpm tauri signer sign "$APPIMAGE" --password=
-          test -s "${APPIMAGE}.sig"
-
-      - name: Prepare updater manifest (latest.json)
+      - name: Package thin Arch-native AppImage and sign
         id: manifest
         env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
           TAG_INPUT: ${{ inputs.tag }}
@@ -202,17 +141,10 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          BUNDLE_DIR="src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage"
-          APPIMAGE="$(find "$BUNDLE_DIR" -maxdepth 1 -type f -name '*.AppImage' | head -n 1)"
-          if [ -z "$APPIMAGE" ]; then
-            echo "::error::No AppImage produced in $BUNDLE_DIR"
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is required for in-app updates."
             exit 1
           fi
-          SIG_FILE="${APPIMAGE}.sig"
-          if [ ! -s "$SIG_FILE" ]; then
-            pnpm tauri signer sign "$APPIMAGE" --password=
-          fi
-          test -s "$SIG_FILE"
 
           VERSION="$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version")"
           if [ -n "$TAG_INPUT" ]; then
@@ -223,11 +155,60 @@ jobs:
             TAG="v${VERSION}"
           fi
 
-          APPIMAGE_NAME="$(basename "$APPIMAGE")"
+          BIN="src-tauri/target/x86_64-unknown-linux-gnu/release/harbor"
+          test -x "$BIN"
+
           STAGE_DIR="${RUNNER_TEMP}/harbor-linux-release"
-          mkdir -p "$STAGE_DIR"
-          cp "$APPIMAGE" "${STAGE_DIR}/${APPIMAGE_NAME}"
-          cp "$SIG_FILE" "${STAGE_DIR}/${APPIMAGE_NAME}.sig"
+          APPDIR="${RUNNER_TEMP}/Harbor.AppDir"
+          rm -rf "$STAGE_DIR" "$APPDIR"
+          mkdir -p "$STAGE_DIR" "$APPDIR/usr/bin" "$APPDIR/usr/lib/Harbor/fonts" "$APPDIR/usr/lib/Harbor/notices" "$APPDIR/usr/lib/Harbor/resources"
+
+          # Binary + Tauri resource_dir layout ($APPDIR/usr/lib/Harbor)
+          install -Dm755 "$BIN" "$APPDIR/usr/bin/harbor"
+          ln -s Harbor "$APPDIR/usr/lib/harbor"
+          cp -a src-tauri/fonts/. "$APPDIR/usr/lib/Harbor/fonts/"
+          cp -a src-tauri/THIRD-PARTY-NOTICES.txt "$APPDIR/usr/lib/Harbor/notices/"
+          for dir in harbor-stream-blocker capstan pokemon-engine moonshine; do
+            if [ -d "src-tauri/resources/${dir}" ]; then
+              cp -a "src-tauri/resources/${dir}" "$APPDIR/usr/lib/Harbor/resources/${dir}"
+            fi
+          done
+
+          # AppImage metadata and clean AppRun (uses host Arch webkit2gtk-4.1, mpv, Mesa, Wayland, libva)
+          cp src-tauri/icons/128x128.png "$APPDIR/harbor.png"
+          ln -s harbor.png "$APPDIR/.DirIcon"
+          cat <<'EOF' > "$APPDIR/harbor.desktop"
+          [Desktop Entry]
+          Name=Harbor
+          Comment=Stremio-compatible media client
+          Exec=harbor %U
+          Icon=harbor
+          Type=Application
+          Categories=AudioVideo;Video;Player;
+          MimeType=x-scheme-handler/harbor;x-scheme-handler/stremio;
+          StartupWMClass=harbor
+          EOF
+
+          cat <<'EOF' > "$APPDIR/AppRun"
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          export APPDIR="${APPDIR:-$HERE}"
+          exec "$HERE/usr/bin/harbor" "$@"
+          EOF
+          chmod +x "$APPDIR/AppRun"
+
+          APPIMAGE_NAME="Harbor_${VERSION}_amd64.AppImage"
+          APPIMAGE="${STAGE_DIR}/${APPIMAGE_NAME}"
+          curl -fsSL --retry 4 --retry-delay 3 \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" \
+            -o "${RUNNER_TEMP}/appimagetool"
+          chmod +x "${RUNNER_TEMP}/appimagetool"
+          ARCH=x86_64 "${RUNNER_TEMP}/appimagetool" "$APPDIR" "$APPIMAGE"
+          test -s "$APPIMAGE"
+
+          pnpm tauri signer sign "$APPIMAGE" --password=
+          SIG_FILE="${APPIMAGE}.sig"
+          test -s "$SIG_FILE"
 
           VERSION="$VERSION" \
           TAG="$TAG" \
@@ -244,7 +225,7 @@ jobs:
             const sig = fs.readFileSync(process.env.SIG_FILE, "utf8").trim();
             const manifest = {
               version,
-              notes: `Harbor ${version} for Linux (x86_64 AppImage)`,
+              notes: `Harbor ${version} for Arch Linux (native x86_64 thin AppImage)`,
               pub_date: new Date().toISOString(),
               platforms: {
                 "linux-x86_64": {
@@ -256,6 +237,7 @@ jobs:
             fs.writeFileSync(`${process.env.STAGE_DIR}/latest.json`, JSON.stringify(manifest, null, 2) + "\n");
           '
 
+          ls -lh "$STAGE_DIR"
           cat "${STAGE_DIR}/latest.json"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -265,7 +247,7 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: harbor-linux-x86_64-${{ steps.manifest.outputs.version }}
+          name: harbor-arch-x86_64-${{ steps.manifest.outputs.version }}
           path: ${{ steps.manifest.outputs.stage_dir }}/*
           retention-days: 14
 
@@ -283,7 +265,7 @@ jobs:
           else
             gh release create "$TAG" "${STAGE_DIR}"/* \
               --repo "$GITHUB_REPOSITORY" \
-              --title "Harbor v${VERSION} (Linux)" \
-              --notes "Automated Linux x86_64 AppImage build from HarborCommunity/Harbor with signed in-app auto-updates." \
+              --title "Harbor v${VERSION} (Arch Linux)" \
+              --notes "Native Arch Linux x86_64 AppImage build from HarborCommunity/Harbor (uses host webkit2gtk-4.1, mpv, Mesa, Wayland, and VA-API) with signed in-app auto-updates." \
               --latest
           fi
