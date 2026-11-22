@@ -151,6 +151,46 @@ jobs:
             --bundles appimage \
             --config '{"bundle":{"externalBin":[],"createUpdaterArtifacts":true}}'
 
+      - name: Strip host-ABI libraries and repack signed AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage"
+          APPDIR="${BUNDLE_DIR}/Harbor.AppDir"
+          APPIMAGE="$(find "$BUNDLE_DIR" -maxdepth 1 -type f -name '*.AppImage' | head -n 1)"
+          test -d "$APPDIR"
+          test -f "$APPIMAGE"
+
+          # Exclude Ubuntu 22.04 libraries that clash with newer host Mesa/Wayland,
+          # bash/readline, and VA-API/VDPAU drivers on rolling distros like Arch.
+          for pattern in \
+            'libwayland-client.so*' \
+            'libwayland-egl.so*' \
+            'libwayland-server.so*' \
+            'libwayland-cursor.so*' \
+            'libreadline.so*' \
+            'libtinfo.so*' \
+            'libncurses.so*' \
+            'libncursesw.so*' \
+            'libva.so*' \
+            'libva-drm.so*' \
+            'libva-wayland.so*' \
+            'libva-x11.so*' \
+            'libvdpau.so*'; do
+            find "${APPDIR}/usr/lib" -maxdepth 2 -name "$pattern" -print -delete
+          done
+
+          rm -f "$APPIMAGE" "${APPIMAGE}.sig"
+          ARCH=x86_64 LDAI_OUTPUT="$APPIMAGE" \
+            "${HOME}/.cache/tauri/linuxdeploy-plugin-appimage-x86_64.AppImage" \
+            --appdir "$APPDIR"
+          test -s "$APPIMAGE"
+          pnpm tauri signer sign "$APPIMAGE" --password=
+          test -s "${APPIMAGE}.sig"
+
       - name: Prepare updater manifest (latest.json)
         id: manifest
         env:
